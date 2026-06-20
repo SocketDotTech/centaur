@@ -1121,8 +1121,9 @@ fn proxy_egress_rules(
 ) -> Vec<NetworkPolicyEgressRule> {
     // Upstream egress: 443/5432 for normal traffic, plus the iron-control port
     // (deduped) so a sync-mode proxy can reach the control plane.
-    let mut upstream_ports = vec![network_port(443), network_port(5432)];
-    if control_port != 443 && control_port != 5432 {
+    // 9090: VPC-internal HTTP services (e.g. Prometheus) reached via CONNECT tunnel.
+    let mut upstream_ports = vec![network_port(443), network_port(5432), network_port(9090)];
+    if control_port != 443 && control_port != 5432 && control_port != 9090 {
         upstream_ports.push(network_port(control_port));
     }
     let mut rules = vec![
