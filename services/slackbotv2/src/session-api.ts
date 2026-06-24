@@ -1351,7 +1351,17 @@ async function* parseSessionEventStream(
         eventId: event.id,
         eventKind: event.event
       } satisfies RustSessionStreamEvent
-      if (isTerminalCodexOutputLine(event.data)) return
+      if (isTerminalCodexOutputLine(event.data)) {
+        if (totalInputTokens + totalOutputTokens > 0) {
+          yield {
+            data: tokenFooterLine(totalInputTokens, totalOutputTokens),
+            event: 'session.output.line',
+            eventId: undefined,
+            eventKind: 'session.output.line'
+          } satisfies RustSessionStreamEvent
+        }
+        return
+      }
       continue
     }
     if (event.event === 'session.execution_failed' || event.event === 'session.stream_error') {
