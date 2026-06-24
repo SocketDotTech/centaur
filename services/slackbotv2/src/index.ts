@@ -111,7 +111,29 @@ const SLACK_FALLBACK_TEXT_MAX_CHARS = 35_000
 const POSTGRES_CONNECT_INITIAL_DELAY_MS = 250
 const POSTGRES_CONNECT_MAX_DELAY_MS = 10_000
 
+// Module-level pool for token usage writes (set once by createSlackbotV2).
+let _tokenPool: pg.Pool | undefined
+
+async function writeTokenUsage(threadId: string, inputTokens: number, outputTokens: number): Promise<void> {
+  if (!_tokenPool) return
+  const cost = (inputTokens * 3 + outputTokens * 15) / 1_000_000
+  try {
+    await _tokenPool.query(
+      `INSERT INTO session_events (thread_key, event_type, payload)
+       VALUES ($1, 'session.token_usage', $2::jsonb)
+       ON CONFLICT DO NOTHING`,
+      [threadId, JSON.stringify({ input_tokens: inputTokens, output_tokens: outputTokens, cost_usd: cost })]
+    )
+  } catch {
+    // Non-fatal — token write failure should never break the response path.
+  }
+}
+
 export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
+  if (options.postgresUrl && !_tokenPool) {
+    _tokenPool = new pg.Pool({ connectionString: options.postgresUrl })
+    _tokenPool.on('error', () => {})
+  }
   const userName = options.userName ?? 'centaur'
   const logger = options.logger ?? noopLogger
   const slack = createSlackAdapter({
@@ -1868,8 +1890,9 @@ async function* streamSessionAfterHandoff(
   input: ForwardSessionInput
 ): AsyncIterable<SlackbotV2RendererSource> {
   let stream: AsyncIterable<SlackbotV2RendererSource>
+  const onTokens = (inp: number, out: number) => { void writeTokenUsage(input.threadId, inp, out) }
   try {
-    stream = await openSessionEventStream(options, input)
+    stream = await openSessionEventStream(options, input, onTokens)
   } catch (error) {
     traceLog(options, 'slackbotv2_forward_failed', input.trace, {
       error: errorMessage(error)

@@ -229,7 +229,8 @@ export async function forwardToSessionApi(
 
 export async function openSessionEventStream(
   options: SlackbotV2Options,
-  input: Pick<ForwardSessionInput, 'afterEventId' | 'executionId' | 'onEventId' | 'threadId' | 'trace'>
+  input: Pick<ForwardSessionInput, 'afterEventId' | 'executionId' | 'onEventId' | 'threadId' | 'trace'>,
+  onTokensCollected?: (inputTokens: number, outputTokens: number) => void
 ): Promise<AsyncIterable<SlackbotV2RendererSource>> {
   const streamStartedAtMs = nowMs()
   const stream = await recordSessionApiOperation('open_event_stream', () =>
@@ -238,7 +239,8 @@ export async function openSessionEventStream(
       input.threadId,
       input.afterEventId,
       input.executionId,
-      input.onEventId
+      input.onEventId,
+      onTokensCollected
     )
   )
   traceLog(options, 'slackbotv2_session_events_opened', input.trace, {
@@ -878,7 +880,8 @@ async function streamSessionNotifications(
   threadId: string,
   afterEventId: number,
   executionId: string | undefined,
-  onEventId: (eventId: number) => void
+  onEventId: (eventId: number) => void,
+  onTokensCollected?: (inputTokens: number, outputTokens: number) => void
 ): Promise<AsyncIterable<SlackbotV2RendererSource>> {
   const fetchFn = options.fetch ?? fetch
   const url = new URL(apiSessionUrl(options.apiUrl, threadId, 'events'))
@@ -893,7 +896,7 @@ async function streamSessionNotifications(
   )
   await ensureApiOk(response, 'stream events')
   if (!response.body) return toAsyncIterable([])
-  return parseSessionEventStream(response.body, onEventId)
+  return parseSessionEventStream(response.body, onEventId, onTokensCollected)
 }
 
 function apiSessionUrl(
@@ -1327,7 +1330,8 @@ function tokenFooterLine(inputTokens: number, outputTokens: number): string {
 
 async function* parseSessionEventStream(
   stream: ReadableStream<Uint8Array>,
-  onEventId: (eventId: number) => void
+  onEventId: (eventId: number) => void,
+  onTokensCollected?: (inputTokens: number, outputTokens: number) => void
 ): AsyncIterable<SlackbotV2RendererSource> {
   let totalInputTokens = 0
   let totalOutputTokens = 0
@@ -1353,6 +1357,7 @@ async function* parseSessionEventStream(
       } satisfies RustSessionStreamEvent
       if (isTerminalCodexOutputLine(event.data)) {
         if (totalInputTokens + totalOutputTokens > 0) {
+          onTokensCollected?.(totalInputTokens, totalOutputTokens)
           yield {
             data: tokenFooterLine(totalInputTokens, totalOutputTokens),
             event: 'session.output.line',
@@ -1385,6 +1390,7 @@ async function* parseSessionEventStream(
     if (event.event === 'session.execution_completed') {
       // Emit token/cost footer before signalling completion
       if (totalInputTokens + totalOutputTokens > 0) {
+        onTokensCollected?.(totalInputTokens, totalOutputTokens)
         yield {
           data: tokenFooterLine(totalInputTokens, totalOutputTokens),
           event: 'session.output.line',
