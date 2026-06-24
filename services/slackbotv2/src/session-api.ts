@@ -1310,13 +1310,41 @@ type ParsedSessionEvent = {
   id?: number
 }
 
+// Sonnet 4.6 pricing per token (USD)
+const INPUT_COST_PER_TOKEN = 3 / 1_000_000
+const OUTPUT_COST_PER_TOKEN = 15 / 1_000_000
+
+function tokenFooterLine(inputTokens: number, outputTokens: number): string {
+  const cost = inputTokens * INPUT_COST_PER_TOKEN + outputTokens * OUTPUT_COST_PER_TOKEN
+  const totalTokens = inputTokens + outputTokens
+  const formattedTokens = totalTokens.toLocaleString('en-US')
+  const formattedCost = cost.toFixed(4)
+  return JSON.stringify({
+    type: 'socket.token_footer',
+    text: `_Tokens: ${formattedTokens} | Cost: $${formattedCost}_`
+  })
+}
+
 async function* parseSessionEventStream(
   stream: ReadableStream<Uint8Array>,
   onEventId: (eventId: number) => void
 ): AsyncIterable<SlackbotV2RendererSource> {
+  let totalInputTokens = 0
+  let totalOutputTokens = 0
+
   for await (const event of parseSseEvents(stream)) {
     if (typeof event.id === 'number') onEventId(event.id)
     if (event.event === 'session.output.line') {
+      // Accumulate token usage from turn.completed events
+      try {
+        const parsed = JSON.parse(event.data)
+        if (isJsonObject(parsed) && parsed.type === 'turn.completed' && isJsonObject(parsed.usage)) {
+          if (typeof parsed.usage.input_tokens === 'number') totalInputTokens += parsed.usage.input_tokens
+          if (typeof parsed.usage.output_tokens === 'number') totalOutputTokens += parsed.usage.output_tokens
+        }
+      } catch {
+        // non-JSON line — ignore
+      }
       yield {
         data: event.data,
         event: event.event,
@@ -1345,6 +1373,15 @@ async function* parseSessionEventStream(
       return
     }
     if (event.event === 'session.execution_completed') {
+      // Emit token/cost footer before signalling completion
+      if (totalInputTokens + totalOutputTokens > 0) {
+        yield {
+          data: tokenFooterLine(totalInputTokens, totalOutputTokens),
+          event: 'session.output.line',
+          eventId: undefined,
+          eventKind: 'session.output.line'
+        } satisfies RustSessionStreamEvent
+      }
       yield {
         data: sessionEventData(event),
         event: event.event,
